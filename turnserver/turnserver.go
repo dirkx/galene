@@ -32,7 +32,7 @@ type UDPTCPAddr struct {
 
 // General inside/outside address; where the two are 
 // the same in the cannonical simple case; but, for example
-// in a DMZ or when NAT-ting; the internal address is 
+// in a DMZ or when NAT-ting; the internal address is
 // that what the turns server listens on (i.e bind()); whereas
 // any turn:// URI's and so on are constructed with the 
 // outside address. The term 'Paired' is taken from NAT.
@@ -135,7 +135,9 @@ func publicAddresses() ([]net.IP, error) {
 func listener(a net.IP, port int, relay net.IP) (*turn.PacketConnConfig, *turn.ListenerConfig) {
 	var pcc *turn.PacketConnConfig
 	var lc *turn.ListenerConfig
-	s := net.JoinHostPort(a.String(), strconv.Itoa(port))
+        as := a.String()
+        if a == nil { as = "" }
+	s := net.JoinHostPort(as, strconv.Itoa(port))
 
 	var g turn.RelayAddressGenerator 
 	raddr := a.String()
