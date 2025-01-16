@@ -8,14 +8,93 @@ import (
 	"net"
 	"strconv"
 	"sync"
+        "fmt"
+        "strings"
 
 	"github.com/pion/turn/v2"
 	"github.com/pion/webrtc/v3"
 )
 
+const DEFAULT_PORT = 1194
+
 var username string
 var password string
 var Address string
+
+// Generalize a TCP/IP address & port pair. When the
+// port is '0' - an `off' is assumed.
+//
+type UDPTCPAddr struct {
+	IP   net.IP
+	Port int
+	Zone string // IPv6 scoped addressing zone
+}
+
+// General inside/outside address; where the two are 
+// the same in the cannonical simple case; but, for example
+// in a DMZ or when NAT-ting; the internal address is 
+// that what the turns server listens on (i.e bind()); whereas
+// any turn:// URI's and so on are constructed with the 
+// outside address. The term 'Paired' is taken from NAT.
+//
+type PairedAddr struct {
+        exposedAddr UDPTCPAddr // Or Relay Address
+        internalAddr UDPTCPAddr
+}
+
+func (addr PairedAddr) String() string {
+        return fmt.Sprintf("%v/%v", addr.exposedAddr, addr.internalAddr);
+}
+
+func ResolveUDPTCPAddr(address string) (*UDPTCPAddr, error) {
+	// We're doing a 'cheat' here; and rely on the UDP translator; as we know
+        // that UDP/TCP are indentical with regard to port/addr structure.
+        addr, err := net.ResolveUDPAddr("udp", address)
+	if err != nil {
+		return nil, err
+	}
+        // Complete the cheat by just copying out the address details; but not the network familly
+        r := UDPTCPAddr { addr.IP, addr.Port, addr.Zone }
+	return &r, nil
+}
+
+func NewUDPTCPAddr(Address string) (*UDPTCPAddr, error) {
+        if Address == "" || Address == "off" {
+		return &UDPTCPAddr{}, nil
+        }
+        ad := Address
+        if Address == "auto" {
+                ad = fmt.Sprintf(":%v", DEFAULT_PORT)
+        } else
+        if strings.Index(ad,":") == -1 {
+                ad = fmt.Sprintf("%v:%v", ad, DEFAULT_PORT)
+        }
+        addr, err := ResolveUDPTCPAddr(ad)
+        if err != nil {
+                return nil, err
+        }
+        return addr, nil
+}
+
+func NewPairedAddr(str string) (*PairedAddr, error) {
+        i := strings.Index(str,"/")
+        left :=str
+        if i > 1 {
+	     left = str[0:i]
+             str = str[i+1:]
+        }
+        exposedAddr, err := NewUDPTCPAddr(left)
+        if err != nil {
+                return nil, err
+        }
+        internalAddr, err := NewUDPTCPAddr(str)
+        if err != nil {
+                return nil, err
+        }
+
+        e := PairedAddr { *exposedAddr, *internalAddr }
+        return &e, nil
+}
 
 var server struct {
 	mu        sync.Mutex
@@ -23,6 +102,7 @@ var server struct {
 	server    *turn.Server
 }
 
+// Remove any RFC 1918 addreses from a list of addresses.
 func publicAddresses() ([]net.IP, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
@@ -57,34 +137,38 @@ func listener(a net.IP, port int, relay net.IP) (*turn.PacketConnConfig, *turn.L
 	var lc *turn.ListenerConfig
 	s := net.JoinHostPort(a.String(), strconv.Itoa(port))
 
-	var g turn.RelayAddressGenerator
+	var g turn.RelayAddressGenerator 
+	raddr := a.String()
 	if relay == nil || relay.IsUnspecified() {
 		g = &turn.RelayAddressGeneratorNone{
 			Address: a.String(),
 		}
 	} else {
+                raddr = relay.String()
 		g = &turn.RelayAddressGeneratorStatic{
 			RelayAddress: relay,
 			Address:      a.String(),
 		}
 	}
 
-	p, err := net.ListenPacket("udp4", s)
+	p, err := net.ListenPacket("udp", s)
 	if err == nil {
 		pcc = &turn.PacketConnConfig{
 			PacketConn:            p,
 			RelayAddressGenerator: g,
 		}
+		log.Printf("TURN: listener on udp:%v, visible address: %v",s,raddr)
 	} else {
 		log.Printf("TURN: listenPacket(%v): %v", s, err)
 	}
 
-	l, err := net.Listen("tcp4", s)
+	l, err := net.Listen("tcp", s)
 	if err == nil {
 		lc = &turn.ListenerConfig{
 			Listener:              l,
 			RelayAddressGenerator: g,
 		}
+		log.Printf("TURN: listener on tcp:%v, visible address: %v",s,raddr)
 	} else {
 		log.Printf("TURN: listen(%v): %v", s, err)
 	}
@@ -99,20 +183,13 @@ func Start() error {
 	if server.server != nil {
 		return nil
 	}
-
-	if Address == "" {
-		return errors.New("built-in TURN server disabled")
+        addressPair, err := NewPairedAddr(Address)
+        if err != nil {
+		return errors.New(fmt.Sprintf("TURN: Address error: %v", err))
+        }
+	if addressPair.internalAddr.Port == 0 {
+		return errors.New("TURN: built-in TURN server disabled")
 	}
-
-	ad := Address
-	if Address == "auto" {
-		ad = ":1194"
-	}
-	addr, err := net.ResolveUDPAddr("udp4", ad)
-	if err != nil {
-		return err
-	}
-
 	username = "galene"
 	buf := make([]byte, 6)
 	_, err = rand.Read(buf)
@@ -126,26 +203,29 @@ func Start() error {
 
 	var lcs []turn.ListenerConfig
 	var pccs []turn.PacketConnConfig
-
-	if addr.IP != nil && !addr.IP.IsUnspecified() {
-		a := addr.IP.To4()
+	if addressPair.exposedAddr.IP != nil && !addressPair.exposedAddr.IP.IsUnspecified() {
+		a := addressPair.exposedAddr.IP.To4()
 		if a == nil {
-			return errors.New("couldn't parse address")
+			return errors.New("couldn't parse address/not an IPv4 address")
 		}
-		pcc, lc := listener(net.IP{0, 0, 0, 0}, addr.Port, a)
+		pcc, lc := listener(addressPair.internalAddr.IP, addressPair.internalAddr.Port, addressPair.exposedAddr.IP)
 		if pcc != nil {
 			pccs = append(pccs, *pcc)
 			server.addresses = append(server.addresses, &net.UDPAddr{
-				IP:   a,
-				Port: addr.Port,
+				IP:   addressPair.exposedAddr.IP,
+				Port: addressPair.exposedAddr.Port,
 			})
+			log.Printf("TURN: External address udp:%v:%v", 
+				addressPair.exposedAddr.IP, addressPair.exposedAddr.Port)
 		}
 		if lc != nil {
 			lcs = append(lcs, *lc)
 			server.addresses = append(server.addresses, &net.TCPAddr{
-				IP:   a,
-				Port: addr.Port,
+				IP:   addressPair.exposedAddr.IP,
+				Port: addressPair.exposedAddr.Port,
 			})
+			log.Printf("TURN: External address tcp:%v:%v", 
+				addressPair.exposedAddr.IP, addressPair.exposedAddr.Port)
 		}
 	} else {
 		as, err := publicAddresses()
@@ -158,24 +238,26 @@ func Start() error {
 		}
 
 		for _, a := range as {
-			pcc, lc := listener(a, addr.Port, nil)
+			pcc, lc := listener(a, addressPair.internalAddr.Port, nil)
 			if pcc != nil {
 				pccs = append(pccs, *pcc)
 				server.addresses = append(server.addresses,
 					&net.UDPAddr{
 						IP:   a,
-						Port: addr.Port,
+						Port: addressPair.exposedAddr.Port,
 					},
 				)
+				log.Printf("TURN: external address udp:%v:%v", a, addressPair.exposedAddr.Port)
 			}
 			if lc != nil {
 				lcs = append(lcs, *lc)
 				server.addresses = append(server.addresses,
 					&net.TCPAddr{
 						IP:   a,
-						Port: addr.Port,
+						Port: addressPair.exposedAddr.Port,
 					},
 				)
+				log.Printf("TURN: external address tcp:%v:%v", a, addressPair.exposedAddr.Port)
 			}
 		}
 	}
@@ -183,8 +265,7 @@ func Start() error {
 	if len(pccs) == 0 && len(lcs) == 0 {
 		return errors.New("couldn't establish any listeners")
 	}
-
-	log.Printf("Starting built-in TURN server on %v", addr.String())
+	log.Printf("TURN: Starting built-in TURN server")
 
 	server.server, err = turn.NewServer(turn.ServerConfig{
 		Realm: "galene.org",

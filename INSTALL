@@ -210,8 +210,18 @@ Galène includes an IPv4-only TURN server, which is controlled by the
     the one given in the option; this is useful when running behind NAT
     with port forwarding set up.
 
+  * If an IP address is in the form [<ip>][:<port>][/[<ip>][:<port>] then
+    the left side is taken as the external (i.e. exposed and coded into
+    a turn URI) pair. And the additional right hand side as the internal
+    IP/port pair that is mapped to those external addresses. So for
+    example a configuration of 203.0.113.1:1194/10.11.0.1:2194 is for
+    a TURN server that is exposed (e.g. redirected from a firewall)
+    as  203.0.113.1:1194 but is known in the DMZ or on the other side
+    of NAT as running on 10.11.0.1:2194.
+
   * the default value is `auto`, which behaves like `:1194` if there is no
-    `data/ice-servers.json` file, and like `""` otherwise.
+    `data/ice-servers.json` file, and like `""` otherwise. In this case
+    galene will bind to the ANY address. 
 
 If the server is not accessible from the Internet, e.g. because of NAT or
 because it is behind a restrictive firewall, then you should configure
