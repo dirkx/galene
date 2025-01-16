@@ -76,6 +76,13 @@ func NewUDPTCPAddr(Address string) (*UDPTCPAddr, error) {
         return addr, nil
 }
 
+func (addr UDPTCPAddr) String() string {
+        if (addr.IP == nil) {
+            return fmt.Sprintf("*:%v", addr.Port)
+        }
+        return fmt.Sprintf("%v:%v", addr.IP, addr.Port)
+}
+
 func NewPairedAddr(str string) (*PairedAddr, error) {
         i := strings.Index(str,"/")
         left :=str
@@ -136,7 +143,8 @@ func listener(a net.IP, port int, relay net.IP) (*turn.PacketConnConfig, *turn.L
 	var pcc *turn.PacketConnConfig
 	var lc *turn.ListenerConfig
         as := a.String()
-        if a == nil { as = "" }
+        ad := a.String()
+        if a == nil { as = ""; ad = "*" }
 	s := net.JoinHostPort(as, strconv.Itoa(port))
 
 	var g turn.RelayAddressGenerator 
@@ -159,7 +167,7 @@ func listener(a net.IP, port int, relay net.IP) (*turn.PacketConnConfig, *turn.L
 			PacketConn:            p,
 			RelayAddressGenerator: g,
 		}
-		log.Printf("TURN: listener on udp:%v, visible address: %v",s,raddr)
+		log.Printf("TURN: listener on udp:%v:%v, visible address: %v",ad,port,raddr)
 	} else {
 		log.Printf("TURN: listenPacket(%v): %v", s, err)
 	}
@@ -170,7 +178,7 @@ func listener(a net.IP, port int, relay net.IP) (*turn.PacketConnConfig, *turn.L
 			Listener:              l,
 			RelayAddressGenerator: g,
 		}
-		log.Printf("TURN: listener on tcp:%v, visible address: %v",s,raddr)
+		log.Printf("TURN: listener on tcp:%v:%v, visible address: %v",ad,port,raddr)
 	} else {
 		log.Printf("TURN: listen(%v): %v", s, err)
 	}
@@ -217,8 +225,7 @@ func Start() error {
 				IP:   addressPair.exposedAddr.IP,
 				Port: addressPair.exposedAddr.Port,
 			})
-			log.Printf("TURN: External address udp:%v:%v", 
-				addressPair.exposedAddr.IP, addressPair.exposedAddr.Port)
+			log.Printf("TURN: External address udp:%v", addressPair.exposedAddr)
 		}
 		if lc != nil {
 			lcs = append(lcs, *lc)
@@ -226,8 +233,7 @@ func Start() error {
 				IP:   addressPair.exposedAddr.IP,
 				Port: addressPair.exposedAddr.Port,
 			})
-			log.Printf("TURN: External address tcp:%v:%v", 
-				addressPair.exposedAddr.IP, addressPair.exposedAddr.Port)
+			log.Printf("TURN: External address tcp:%v", addressPair.exposedAddr)
 		}
 	} else {
 		as, err := publicAddresses()
